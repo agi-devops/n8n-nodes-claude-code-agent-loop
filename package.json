@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-claude-agent-loop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "n8n node for Claude Code Agent SDK - run AI agents with git worktrees, multi-repo support, and session resume",
   "author": {
     "name": "Danny",
@@ -34,7 +34,9 @@
   },
   "n8n": {
     "n8nNodesApiVersion": 1,
-    "nodes": ["dist/nodes/ClaudeAgent/ClaudeAgent.node.js"]
+    "nodes": [
+      "dist/nodes/ClaudeAgent/ClaudeAgent.node.js"
+    ]
   },
   "scripts": {
     "build": "tsc && npm run copy-assets",
