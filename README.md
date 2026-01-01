@@ -2,6 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/n8n-nodes-claude-agent-loop.svg)](https://www.npmjs.com/package/n8n-nodes-claude-agent-loop)
 [![npm downloads](https://img.shields.io/npm/dm/n8n-nodes-claude-agent-loop.svg)](https://www.npmjs.com/package/n8n-nodes-claude-agent-loop)
+[![GitHub](https://img.shields.io/github/stars/agi-devops/n8n-nodes-claude-agent-loop?style=social)](https://github.com/agi-devops/n8n-nodes-claude-agent-loop)
 
 n8n community node for running Claude Code agents with native SDK integration.
 
@@ -21,7 +22,7 @@ npm install n8n-nodes-claude-agent-loop
 Or clone and build locally:
 
 ```bash
-git clone https://github.com/Niach/n8n-nodes-claude-agent-loop.git
+git clone https://github.com/agi-devops/n8n-nodes-claude-agent-loop.git
 cd n8n-nodes-claude-agent-loop
 npm install
 npm run build
