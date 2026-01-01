@@ -3,7 +3,7 @@
 n8n community node for running Claude Code agents with native SDK integration.
 
 **Features:**
-- Run predefined or custom Claude agents
+- Use your native Claude Code agents (from `~/.claude/agents/`)
 - Multi-repository support with git worktrees
 - Automatic PR creation (Gitea & GitHub)
 - Session resume for multi-turn interactions
@@ -11,7 +11,11 @@ n8n community node for running Claude Code agents with native SDK integration.
 
 ## Installation
 
-Clone the repository and build locally:
+```bash
+npm install n8n-claude-agent-pr
+```
+
+Or clone and build locally:
 
 ```bash
 git clone https://github.com/Niach/n8n-claude-agent-pr.git
@@ -20,17 +24,45 @@ npm install
 npm run build
 ```
 
-Then link to your n8n custom nodes directory:
-```bash
-# Copy to n8n custom nodes location (inside n8n container)
-cp -r dist /path/to/n8n/custom/nodes/n8n-claude-agent-pr
-```
-
 ## Prerequisites
 
 - **Claude Code CLI** authenticated (`claude` command available)
+- **Agents** defined in `~/.claude/agents/` (see below)
 - **Git** for worktree operations
 - Optional: `gitea` or `github` CLI for PR creation
+
+## Creating Agents
+
+This node uses your native Claude Code agents. Create agents as markdown files in `~/.claude/agents/`:
+
+```bash
+mkdir -p ~/.claude/agents
+```
+
+### Example Agent: `~/.claude/agents/code-reviewer.md`
+
+```markdown
+---
+tools: [Read, Write, Edit, Bash, Grep, Glob]
+model: claude-sonnet-4-20250514
+---
+# Code Reviewer
+
+You are a code review agent. Your task is to review code changes and suggest improvements.
+
+## Guidelines
+- Check for bugs and potential issues
+- Suggest performance improvements
+- Ensure code follows best practices
+- Look for security vulnerabilities
+```
+
+### Frontmatter Options
+
+| Field | Description |
+|-------|-------------|
+| `tools` | Array of allowed tools: `[Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch]` |
+| `model` | Claude model ID (e.g., `claude-sonnet-4-20250514`, `claude-opus-4-20250514`) |
 
 ## Node Configuration
 
@@ -38,8 +70,7 @@ cp -r dist /path/to/n8n/custom/nodes/n8n-claude-agent-pr
 
 | Field | Description |
 |-------|-------------|
-| Agent Name | Select a predefined agent or "Custom" |
-| Custom Agent Path | Path to custom agent markdown file (when "Custom" selected) |
+| Agent Name | Name of your agent (matches `~/.claude/agents/<name>.md`) |
 
 ### Repository Configuration
 
@@ -101,34 +132,14 @@ Add one or more repositories for the agent to work with:
 }
 ```
 
-## Custom Agents
+## n8n Container Setup
 
-Create custom agents using markdown files with optional YAML frontmatter:
+When running n8n in Docker, mount your Claude configuration:
 
-```markdown
----
-tools: [Read, Write, Edit, Bash, Grep, Glob]
-model: claude-sonnet-4-20250514
----
-# My Custom Agent
-
-You are a specialized agent for...
-
-## Guidelines
-- Follow coding standards
-- Write tests for new code
-- Document changes
+```yaml
+volumes:
+  - ~/.claude:/home/node/.claude
 ```
-
-Place custom agents in `~/.claude/agents/` or specify the full path.
-
-## Built-in Agents
-
-| Agent | Description |
-|-------|-------------|
-| `code-reviewer` | Reviews code and suggests improvements |
-| `wiki-editor` | Edits wiki documentation |
-| `auto-fixer` | Automatically fixes issues |
 
 ## Security
 

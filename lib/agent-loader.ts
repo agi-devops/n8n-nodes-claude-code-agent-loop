@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 
 export interface AgentDefinition {
   name: string;
@@ -8,59 +9,53 @@ export interface AgentDefinition {
   model?: string;
 }
 
-// User-defined agents directory
-const AGENTS_DIR = '/home/node/.claude/agents';
-
-// Built-in agents bundled with the package
-const BUILTIN_AGENTS_DIR = path.join(__dirname, '..', 'agents');
-
 /**
- * Loads an agent definition from markdown file.
- * First checks user-defined agents, then falls back to built-in.
+ * Gets the Claude Code agents directory.
+ * Checks multiple locations for container/host compatibility.
  */
-export async function loadAgent(agentName: string): Promise<AgentDefinition> {
-  // Handle custom path
-  if (agentName === 'custom') {
-    throw new Error('Custom agent requires customAgentPath parameter');
-  }
-
-  // Try user-defined agents first
-  const userPath = path.join(AGENTS_DIR, `${agentName}.md`);
-  const builtinPath = path.join(BUILTIN_AGENTS_DIR, `${agentName}.md`);
-
-  let content: string;
-  let foundPath: string;
-
-  try {
-    content = await fs.readFile(userPath, 'utf-8');
-    foundPath = userPath;
-  } catch {
-    try {
-      content = await fs.readFile(builtinPath, 'utf-8');
-      foundPath = builtinPath;
-    } catch {
-      throw new Error(
-        `Agent "${agentName}" not found.\n` +
-        `Searched:\n  - ${userPath}\n  - ${builtinPath}`
-      );
-    }
-  }
-
-  console.log(`Loaded agent "${agentName}" from ${foundPath}`);
-  return parseAgentMarkdown(agentName, content);
+function getAgentsDirectories(): string[] {
+  return [
+    // Container path (mounted from host)
+    '/home/node/.claude/agents',
+    // Host home directory
+    path.join(os.homedir(), '.claude', 'agents'),
+  ];
 }
 
 /**
- * Loads an agent from a custom file path.
+ * Loads an agent definition from the native Claude Code agents directory.
+ * Agents are markdown files at ~/.claude/agents/<name>.md
  */
-export async function loadAgentFromPath(filePath: string): Promise<AgentDefinition> {
-  try {
-    const content = await fs.readFile(filePath, 'utf-8');
-    const name = path.basename(filePath, '.md');
-    return parseAgentMarkdown(name, content);
-  } catch (error) {
-    throw new Error(`Failed to load agent from ${filePath}: ${error}`);
+export async function loadAgent(agentName: string): Promise<AgentDefinition> {
+  if (!agentName || agentName.trim().length === 0) {
+    throw new Error('Agent name is required');
   }
+
+  // Validate agent name (prevent path traversal)
+  if (agentName.includes('/') || agentName.includes('\\') || agentName.includes('..')) {
+    throw new Error(`Invalid agent name: "${agentName}". Use only the agent name without path.`);
+  }
+
+  const searchPaths: string[] = [];
+
+  for (const dir of getAgentsDirectories()) {
+    const agentPath = path.join(dir, `${agentName}.md`);
+    searchPaths.push(agentPath);
+
+    try {
+      const content = await fs.readFile(agentPath, 'utf-8');
+      console.log(`Loaded agent "${agentName}" from ${agentPath}`);
+      return parseAgentMarkdown(agentName, content);
+    } catch {
+      // Try next path
+    }
+  }
+
+  throw new Error(
+    `Agent "${agentName}" not found.\n` +
+    `Create your agent at ~/.claude/agents/${agentName}.md\n` +
+    `Searched:\n${searchPaths.map(p => `  - ${p}`).join('\n')}`
+  );
 }
 
 /**
@@ -69,7 +64,7 @@ export async function loadAgentFromPath(filePath: string): Promise<AgentDefiniti
  * Format:
  * ---
  * tools: [Read, Write, Bash]
- * model: opus
+ * model: claude-sonnet-4-20250514
  * ---
  * # Agent Name
  *
@@ -94,10 +89,10 @@ function parseAgentMarkdown(name: string, content: string): AgentDefinition {
         .filter(t => t.length > 0);
     }
 
-    // Parse model: model: opus
-    const modelMatch = frontmatter.match(/model:\s*(\w+)/);
+    // Parse model (full model ID or shorthand)
+    const modelMatch = frontmatter.match(/model:\s*([^\n]+)/);
     if (modelMatch) {
-      agent.model = modelMatch[1];
+      agent.model = modelMatch[1].trim();
     }
   }
 
@@ -105,33 +100,22 @@ function parseAgentMarkdown(name: string, content: string): AgentDefinition {
 }
 
 /**
- * Lists all available agents (user-defined + built-in).
+ * Lists all available agents from the Claude Code agents directory.
  */
 export async function listAgents(): Promise<string[]> {
   const agents = new Set<string>();
 
-  // List user-defined agents
-  try {
-    const userFiles = await fs.readdir(AGENTS_DIR);
-    for (const file of userFiles) {
-      if (file.endsWith('.md')) {
-        agents.add(path.basename(file, '.md'));
+  for (const dir of getAgentsDirectories()) {
+    try {
+      const files = await fs.readdir(dir);
+      for (const file of files) {
+        if (file.endsWith('.md')) {
+          agents.add(path.basename(file, '.md'));
+        }
       }
+    } catch {
+      // Directory might not exist
     }
-  } catch {
-    // User agents directory might not exist
-  }
-
-  // List built-in agents
-  try {
-    const builtinFiles = await fs.readdir(BUILTIN_AGENTS_DIR);
-    for (const file of builtinFiles) {
-      if (file.endsWith('.md')) {
-        agents.add(path.basename(file, '.md'));
-      }
-    }
-  } catch {
-    // Built-in agents directory might not exist
   }
 
   return Array.from(agents).sort();

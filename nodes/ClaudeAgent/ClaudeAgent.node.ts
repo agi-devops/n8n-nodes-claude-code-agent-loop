@@ -6,7 +6,7 @@ import {
   NodeOperationError,
 } from 'n8n-workflow';
 
-import { loadAgent, loadAgentFromPath } from '../../lib/agent-loader.js';
+import { loadAgent } from '../../lib/agent-loader.js';
 import { MultiRepoWorktreeManager, type RepoConfig } from '../../lib/worktree.js';
 import { executeAgent } from '../../lib/sdk-wrapper.js';
 import { createMultiRepoPRs, type PRResult } from '../../lib/pr-creator.js';
@@ -37,27 +37,11 @@ export class ClaudeAgent implements INodeType {
       {
         displayName: 'Agent Name',
         name: 'agentName',
-        type: 'options',
-        options: [
-          { name: 'Code Reviewer', value: 'code-reviewer' },
-          { name: 'Wiki Editor', value: 'wiki-editor' },
-          { name: 'Auto Fixer', value: 'auto-fixer' },
-          { name: 'Custom', value: 'custom' },
-        ],
-        default: 'code-reviewer',
-        description: 'Select a predefined agent or use custom',
-      },
-      {
-        displayName: 'Custom Agent Path',
-        name: 'customAgentPath',
         type: 'string',
         default: '',
-        displayOptions: {
-          show: {
-            agentName: ['custom'],
-          },
-        },
-        description: 'Absolute path to custom agent markdown file',
+        required: true,
+        description: 'Name of the Claude Code agent (from ~/.claude/agents/<name>.md)',
+        placeholder: 'e.g., code-reviewer, my-custom-agent',
       },
 
       // === Repository Configuration ===
@@ -241,7 +225,6 @@ export class ClaudeAgent implements INodeType {
       try {
         // Get parameters
         const agentName = this.getNodeParameter('agentName', i) as string;
-        const customAgentPath = this.getNodeParameter('customAgentPath', i, '') as string;
         const repositoriesParam = this.getNodeParameter('repositories', i, {}) as {
           repos?: Array<{
             repoName: string;
@@ -315,10 +298,8 @@ export class ClaudeAgent implements INodeType {
           });
         }
 
-        // 1. Load agent definition
-        const agent = agentName === 'custom' && customAgentPath
-          ? await loadAgentFromPath(customAgentPath)
-          : await loadAgent(agentName);
+        // 1. Load agent definition from ~/.claude/agents/<name>.md
+        const agent = await loadAgent(agentName);
 
         console.log(`Loaded agent: ${agent.name}`);
 

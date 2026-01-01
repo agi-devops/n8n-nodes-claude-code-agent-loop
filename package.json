@@ -1,6 +1,6 @@
 {
   "name": "n8n-claude-agent-pr",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "n8n node for Claude Code Agent SDK - run AI agents with git worktrees, multi-repo support, and session resume",
   "author": {
     "name": "Danny",
@@ -38,7 +38,7 @@
   },
   "scripts": {
     "build": "tsc && npm run copy-assets",
-    "copy-assets": "cp nodes/ClaudeAgent/*.svg dist/nodes/ClaudeAgent/ 2>/dev/null || true && cp -r agents dist/ 2>/dev/null || true",
+    "copy-assets": "cp nodes/ClaudeAgent/*.svg dist/nodes/ClaudeAgent/ 2>/dev/null || true",
     "dev": "tsc -w",
     "lint": "eslint nodes lib --ext .ts",
     "prepublishOnly": "npm run build"
@@ -57,7 +57,6 @@
     "typescript": "^5.6.0"
   },
   "files": [
-    "dist",
-    "agents"
+    "dist"
   ]
 }
