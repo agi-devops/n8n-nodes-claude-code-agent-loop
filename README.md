@@ -1,4 +1,4 @@
-# n8n-claude-agent-pr
+# n8n-nodes-claude-agent-loop
 
 n8n community node for running Claude Code agents with native SDK integration.
 
@@ -12,14 +12,14 @@ n8n community node for running Claude Code agents with native SDK integration.
 ## Installation
 
 ```bash
-npm install n8n-claude-agent-pr
+npm install n8n-nodes-claude-agent-loop
 ```
 
 Or clone and build locally:
 
 ```bash
-git clone https://github.com/Niach/n8n-claude-agent-pr.git
-cd n8n-claude-agent-pr
+git clone https://github.com/Niach/n8n-nodes-claude-agent-loop.git
+cd n8n-nodes-claude-agent-loop
 npm install
 npm run build
 ```
