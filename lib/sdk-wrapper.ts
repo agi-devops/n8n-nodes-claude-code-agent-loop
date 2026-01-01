@@ -4,11 +4,22 @@ import * as os from 'os';
 import { AgentExecutionError } from './errors.js';
 import { loadAllSkills, buildSkillContext } from './skill-loader.js';
 
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: string;
+}
+
 export interface AgentExecutionResult {
   success: boolean;
   output: string;
   filesModified: string[];
-  sessionId: string;  // For resuming later
+  sessionId: string;          // For resuming later
+  turnCount: number;          // Number of turns in this execution
+  sessionCreated: string;     // ISO timestamp when session started
+  lastActivity: string;       // ISO timestamp of last activity
+  conversationSummary: string; // Summary of recent exchanges
+  hasAction: boolean;         // Whether any write/create action was taken
   error?: string;
 }
 
@@ -19,9 +30,11 @@ export interface SessionConfig {
   model: string;
   maxTurns: number;
   timeout: number;
+  sessionTimeout: number;    // Session timeout in minutes (for output metadata)
   resumeSessionId?: string;  // Optional: resume previous session
   allowedTools?: string[];   // Override default tools
   claudeMdPath?: string;     // Optional: custom CLAUDE.md path
+  conversationContext?: ConversationMessage[];  // Previous messages for context
 }
 
 /**
@@ -85,6 +98,45 @@ const DEFAULT_ALLOWED_TOOLS = [
   'NotebookEdit', 'NotebookRead'
 ];
 
+/**
+ * Builds conversation context from previous messages for multi-turn interactions.
+ */
+function buildConversationContext(messages?: ConversationMessage[]): string {
+  if (!messages || messages.length === 0) {
+    return '';
+  }
+
+  const formattedMessages = messages.map(msg => {
+    const timestamp = msg.timestamp ? ` [${msg.timestamp}]` : '';
+    const role = msg.role === 'user' ? 'User' : 'Assistant';
+    return `[${role}${timestamp}]: ${msg.content}`;
+  }).join('\n\n');
+
+  return `\n\n# Previous Conversation\n\n${formattedMessages}\n\n---\n`;
+}
+
+/**
+ * Generates a summary of the last few conversation exchanges.
+ */
+function summarizeConversation(messages: ConversationMessage[], output: string): string {
+  const recentMessages = messages.slice(-4); // Last 4 messages
+  const parts: string[] = [];
+
+  for (const msg of recentMessages) {
+    const role = msg.role === 'user' ? 'User' : 'Bot';
+    const preview = msg.content.slice(0, 100) + (msg.content.length > 100 ? '...' : '');
+    parts.push(`${role}: ${preview}`);
+  }
+
+  // Add current output as last assistant message
+  if (output) {
+    const preview = output.slice(0, 100) + (output.length > 100 ? '...' : '');
+    parts.push(`Bot: ${preview}`);
+  }
+
+  return parts.join(' | ');
+}
+
 interface ContentBlock {
   type: string;
   text?: string;
@@ -145,6 +197,8 @@ export async function executeAgent(
   config: SessionConfig,
   taskPrompt: string
 ): Promise<AgentExecutionResult> {
+  const sessionCreated = new Date().toISOString();
+
   // Dynamic import for ESM-only SDK
   const sdk = await import('@anthropic-ai/claude-agent-sdk');
   const { query } = sdk;
@@ -154,6 +208,9 @@ export async function executeAgent(
 
   // Build workspace context for multi-repo awareness
   const workspaceContext = buildWorkspaceContext(config.worktrees);
+
+  // Build conversation context from previous messages
+  const conversationContext = buildConversationContext(config.conversationContext);
 
   // Load and inject all available skills
   let skillContext = '';
@@ -170,8 +227,15 @@ export async function executeAgent(
   // Combine: Agent definition + CLAUDE.md context + Workspace context + Skills context
   const fullSystemPrompt = config.agentPrompt + claudeMdContent + workspaceContext + skillContext;
 
-  // Build the full prompt including system instructions
-  const fullPrompt = `${fullSystemPrompt}\n\n---\n\n# Task\n\n${taskPrompt}`;
+  // Build the full prompt including system instructions and conversation context
+  let fullPrompt: string;
+  if (conversationContext) {
+    // Multi-turn mode: include previous conversation
+    fullPrompt = `${fullSystemPrompt}${conversationContext}\n# Current Message\n\n${taskPrompt}`;
+  } else {
+    // New conversation: standard format
+    fullPrompt = `${fullSystemPrompt}\n\n---\n\n# Task\n\n${taskPrompt}`;
+  }
 
   const options = {
     cwd: config.workingDir,
@@ -186,6 +250,7 @@ export async function executeAgent(
   const output: string[] = [];
   const filesModified: string[] = [];
   let sessionId = '';
+  let turnCount = 0;
 
   try {
     // Create the query
@@ -214,6 +279,7 @@ export async function executeAgent(
 
       // Process assistant messages
       if (sdkMsg.type === 'assistant') {
+        turnCount++;
         const text = extractAssistantText(sdkMsg);
         if (text) {
           output.push(text);
@@ -232,18 +298,42 @@ export async function executeAgent(
       }
     }
 
+    const lastActivity = new Date().toISOString();
+    const outputText = output.join('\n');
+    const uniqueFiles = [...new Set(filesModified)];
+
+    // Determine if any action was taken (file writes or specific keywords)
+    const hasAction = uniqueFiles.length > 0 ||
+      outputText.toLowerCase().includes('created issue') ||
+      outputText.toLowerCase().includes('issue erstellt') ||
+      outputText.toLowerCase().includes('committed') ||
+      outputText.toLowerCase().includes('pushed');
+
     return {
       success: true,
-      output: output.join('\n'),
-      filesModified: [...new Set(filesModified)],
-      sessionId
+      output: outputText,
+      filesModified: uniqueFiles,
+      sessionId,
+      turnCount,
+      sessionCreated,
+      lastActivity,
+      conversationSummary: summarizeConversation(config.conversationContext || [], outputText),
+      hasAction
     };
   } catch (error) {
+    const lastActivity = new Date().toISOString();
+    const outputText = output.join('\n');
+
     return {
       success: false,
-      output: output.join('\n'),
+      output: outputText,
       filesModified: [...new Set(filesModified)],
       sessionId,
+      turnCount,
+      sessionCreated,
+      lastActivity,
+      conversationSummary: summarizeConversation(config.conversationContext || [], outputText),
+      hasAction: false,
       error: error instanceof Error ? error.message : String(error)
     };
   }
@@ -258,6 +348,8 @@ export async function continueSession(
   followUpPrompt: string,
   config: Omit<SessionConfig, 'agentPrompt' | 'resumeSessionId' | 'claudeMdPath'>
 ): Promise<AgentExecutionResult> {
+  const sessionCreated = new Date().toISOString(); // Timestamp for this continuation
+
   // Dynamic import for ESM-only SDK
   const sdk = await import('@anthropic-ai/claude-agent-sdk');
   const { query } = sdk;
@@ -272,6 +364,7 @@ export async function continueSession(
 
   const output: string[] = [];
   const filesModified: string[] = [];
+  let turnCount = 0;
 
   try {
     const q = query({
@@ -291,6 +384,7 @@ export async function continueSession(
       }
 
       if (sdkMsg.type === 'assistant') {
+        turnCount++;
         const text = extractAssistantText(sdkMsg);
         if (text) {
           output.push(text);
@@ -307,18 +401,41 @@ export async function continueSession(
       }
     }
 
+    const lastActivity = new Date().toISOString();
+    const outputText = output.join('\n');
+    const uniqueFiles = [...new Set(filesModified)];
+
+    const hasAction = uniqueFiles.length > 0 ||
+      outputText.toLowerCase().includes('created issue') ||
+      outputText.toLowerCase().includes('issue erstellt') ||
+      outputText.toLowerCase().includes('committed') ||
+      outputText.toLowerCase().includes('pushed');
+
     return {
       success: true,
-      output: output.join('\n'),
-      filesModified: [...new Set(filesModified)],
-      sessionId
+      output: outputText,
+      filesModified: uniqueFiles,
+      sessionId,
+      turnCount,
+      sessionCreated,
+      lastActivity,
+      conversationSummary: summarizeConversation(config.conversationContext || [], outputText),
+      hasAction
     };
   } catch (error) {
+    const lastActivity = new Date().toISOString();
+    const outputText = output.join('\n');
+
     return {
       success: false,
-      output: output.join('\n'),
+      output: outputText,
       filesModified: [...new Set(filesModified)],
       sessionId,
+      turnCount,
+      sessionCreated,
+      lastActivity,
+      conversationSummary: summarizeConversation(config.conversationContext || [], outputText),
+      hasAction: false,
       error: error instanceof Error ? error.message : String(error)
     };
   }

@@ -37,6 +37,19 @@ export class ClaudeAgent implements INodeType {
     inputs: ['main'],
     outputs: ['main'],
     properties: [
+      // === Conversation Mode ===
+      {
+        displayName: 'Conversation Mode',
+        name: 'conversationMode',
+        type: 'options',
+        options: [
+          { name: 'New Conversation', value: 'new' },
+          { name: 'Continue Conversation', value: 'continue' },
+        ],
+        default: 'new',
+        description: 'Start a new conversation or continue an existing one',
+      },
+
       // === Agent Selection ===
       {
         displayName: 'Agent Name',
@@ -44,6 +57,11 @@ export class ClaudeAgent implements INodeType {
         type: 'string',
         default: '',
         required: true,
+        displayOptions: {
+          show: {
+            conversationMode: ['new'],
+          },
+        },
         description: 'Name of the Claude Code agent (from ~/.claude/agents/<name>.md)',
         placeholder: 'e.g., code-reviewer, my-custom-agent',
       },
@@ -198,25 +216,42 @@ export class ClaudeAgent implements INodeType {
         description: 'Maximum execution time in seconds (10-3600)',
       },
 
-      // === Session Resume ===
-      {
-        displayName: 'Resume Session',
-        name: 'resumeSession',
-        type: 'boolean',
-        default: false,
-        description: 'Continue from a previous session',
-      },
+      // === Session Configuration ===
       {
         displayName: 'Session ID',
         name: 'sessionId',
         type: 'string',
         default: '',
+        required: true,
         displayOptions: {
           show: {
-            resumeSession: [true],
+            conversationMode: ['continue'],
           },
         },
         description: 'Session ID from previous execution (from output.sessionId)',
+        placeholder: 'e.g., session-abc123',
+      },
+      {
+        displayName: 'Session Timeout (minutes)',
+        name: 'sessionTimeout',
+        type: 'number',
+        typeOptions: {
+          minValue: 1,
+          maxValue: 120,
+        },
+        default: 30,
+        description: 'Session timeout in minutes (1-120). After this time, a new session will be created.',
+      },
+      {
+        displayName: 'Conversation Context',
+        name: 'conversationContext',
+        type: 'string',
+        typeOptions: {
+          rows: 4,
+        },
+        default: '',
+        description: 'JSON array of previous messages for context: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]',
+        placeholder: '[{"role": "user", "content": "First message"}, {"role": "assistant", "content": "Bot response"}]',
       },
     ],
   };
@@ -228,7 +263,10 @@ export class ClaudeAgent implements INodeType {
     for (let i = 0; i < items.length; i++) {
       try {
         // Get parameters
-        const agentName = this.getNodeParameter('agentName', i) as string;
+        const conversationMode = this.getNodeParameter('conversationMode', i, 'new') as 'new' | 'continue';
+        const agentName = conversationMode === 'new'
+          ? this.getNodeParameter('agentName', i) as string
+          : '';
         const repositoriesParam = this.getNodeParameter('repositories', i, {}) as {
           repos?: Array<{
             repoName: string;
@@ -246,8 +284,28 @@ export class ClaudeAgent implements INodeType {
         const model = this.getNodeParameter('model', i, 'claude-sonnet-4-20250514') as string;
         const maxTurns = this.getNodeParameter('maxTurns', i, 50) as number;
         const timeout = this.getNodeParameter('timeout', i, 600) as number;
-        const resumeSession = this.getNodeParameter('resumeSession', i, false) as boolean;
-        const sessionId = this.getNodeParameter('sessionId', i, '') as string;
+        const sessionTimeout = this.getNodeParameter('sessionTimeout', i, 30) as number;
+        const sessionId = conversationMode === 'continue'
+          ? this.getNodeParameter('sessionId', i) as string
+          : '';
+        const conversationContextStr = this.getNodeParameter('conversationContext', i, '') as string;
+
+        // Parse conversation context JSON
+        let conversationContext: Array<{role: 'user' | 'assistant', content: string, timestamp?: string}> = [];
+        if (conversationContextStr) {
+          try {
+            conversationContext = JSON.parse(conversationContextStr);
+            if (!Array.isArray(conversationContext)) {
+              throw new Error('Conversation context must be an array');
+            }
+          } catch (parseError) {
+            throw new NodeOperationError(
+              this.getNode(),
+              `Invalid conversation context JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+              { itemIndex: i }
+            );
+          }
+        }
 
         // Validate inputs
         try {
@@ -268,9 +326,20 @@ export class ClaudeAgent implements INodeType {
         const repos = repositoriesParam.repos || [];
         const isPromptOnlyMode = repos.length === 0;
 
-        // 1. Load agent definition from ~/.claude/agents/<name>.md
-        const agent = await loadAgent(agentName);
-        console.log(`Loaded agent: ${agent.name}`);
+        // Load agent definition (only for new conversations)
+        let agent: { name: string; systemPrompt: string; model?: string; tools?: string[] };
+        if (conversationMode === 'new') {
+          agent = await loadAgent(agentName);
+          console.log(`Loaded agent: ${agent.name}`);
+        } else {
+          // Continue mode - use minimal agent config
+          agent = {
+            name: 'continued-session',
+            systemPrompt: '', // Session already has context
+            model: model,
+          };
+          console.log(`Continuing session: ${sessionId}`);
+        }
 
         let executionResult;
         let prs: PRResult[] = [];
@@ -293,8 +362,10 @@ export class ClaudeAgent implements INodeType {
               model: agent.model || model,
               maxTurns,
               timeout,
-              resumeSessionId: resumeSession ? sessionId : undefined,
+              sessionTimeout,
+              resumeSessionId: conversationMode === 'continue' ? sessionId : undefined,
               allowedTools: agent.tools,
+              conversationContext: conversationContext.length > 0 ? conversationContext : undefined,
             }, prompt);
 
             console.log(`Agent execution completed: success=${executionResult.success}`);
@@ -362,8 +433,10 @@ export class ClaudeAgent implements INodeType {
               model: agent.model || model,
               maxTurns,
               timeout,
-              resumeSessionId: resumeSession ? sessionId : undefined,
+              sessionTimeout,
+              resumeSessionId: conversationMode === 'continue' ? sessionId : undefined,
               allowedTools: agent.tools,
+              conversationContext: conversationContext.length > 0 ? conversationContext : undefined,
             }, prompt);
 
             console.log(`Agent execution completed: success=${executionResult.success}`);
@@ -397,13 +470,22 @@ export class ClaudeAgent implements INodeType {
           }
         }
 
-        // Return result
+        // Return result with enhanced session metadata
         results.push({
           json: {
             success: executionResult.success,
             output: executionResult.output,
             filesModified: executionResult.filesModified,
             sessionId: executionResult.sessionId,
+            // Session metadata
+            turnCount: executionResult.turnCount,
+            sessionCreated: executionResult.sessionCreated,
+            lastActivity: executionResult.lastActivity,
+            sessionTimeout,
+            conversationSummary: executionResult.conversationSummary,
+            hasAction: executionResult.hasAction,
+            conversationMode,
+            // Task/repo metadata
             taskId,
             branchName: finalBranchName,
             agentName: agent.name,
