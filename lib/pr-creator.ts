@@ -1,79 +1,222 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import type { RepoConfig } from './worktree.js';
+/**
+ * Multi-provider PR creation with secure command execution.
+ */
 
-const execAsync = promisify(exec);
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { PRCreationError } from './errors.js';
+import { validateBranchName } from './validation.js';
+
+const execFileAsync = promisify(execFile);
+
+export interface RepoConfig {
+  repoPath: string;
+  worktreesBase: string;
+  repoName: string;
+  gitProvider: 'gitea' | 'github' | 'none';
+  remoteOwner: string;
+  remoteRepo: string;
+  // Optional: custom CLI paths
+  giteaCliPath?: string;
+  githubCliPath?: string;
+}
 
 export interface PRResult {
   repoName: string;
   url: string;
   number: number;
+  provider: string;
 }
 
 export interface MultiPRResult {
   taskId: string;
   prs: PRResult[];
-  linkedDescription: string;  // PR body with cross-links
+  linkedDescription: string;
 }
 
 /**
- * Creates a single PR via the Gitea CLI.
+ * Git provider interface for PR creation abstraction.
  */
-async function createSinglePR(
-  config: RepoConfig,
-  branch: string,
-  baseBranch: string,
-  title: string,
-  body: string
-): Promise<PRResult> {
-  const repoPath = `${config.giteaOwner}/${config.giteaRepo}`;
+interface GitProvider {
+  name: string;
+  createPR(options: CreatePROptions): Promise<PRResult>;
+  updatePRBody?(config: RepoConfig, prNumber: number, body: string): Promise<void>;
+}
 
-  // Escape quotes in title and body for shell
-  const safeTitle = title.replace(/"/g, '\\"').replace(/`/g, '\\`');
-  const safeBody = body.replace(/"/g, '\\"').replace(/`/g, '\\`');
+interface CreatePROptions {
+  config: RepoConfig;
+  branch: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+}
 
-  try {
-    const { stdout } = await execAsync(
-      `/home/node/bin/gitea pr:create ${repoPath} ${branch} ${baseBranch} "${safeTitle}" --body="${safeBody}"`,
-      { timeout: 30000 }
-    );
+/**
+ * Gitea provider implementation using the gitea CLI.
+ */
+class GiteaProvider implements GitProvider {
+  name = 'gitea';
+  private cliPath: string;
 
-    // Parse PR number from output like "PR #123 created"
-    const prMatch = stdout.match(/PR #(\d+)/);
-    const prNumber = prMatch ? parseInt(prMatch[1], 10) : 0;
+  constructor(cliPath: string = 'gitea') {
+    this.cliPath = cliPath;
+  }
 
-    return {
-      repoName: config.repoName,
-      url: `https://gitea.devops.methode5.at/${repoPath}/pulls/${prNumber}`,
-      number: prNumber
-    };
-  } catch (error) {
-    console.error(`Failed to create PR for ${repoPath}:`, error);
-    throw error;
+  async createPR(options: CreatePROptions): Promise<PRResult> {
+    const { config, branch, baseBranch, title, body } = options;
+
+    // Validate inputs
+    validateBranchName(branch);
+    validateBranchName(baseBranch);
+
+    const repoPath = `${config.remoteOwner}/${config.remoteRepo}`;
+
+    try {
+      // Use execFile with array arguments - no shell injection possible
+      const { stdout } = await execFileAsync(
+        this.cliPath,
+        [
+          'pr:create',
+          repoPath,
+          branch,
+          baseBranch,
+          title,
+          `--body=${body}`
+        ],
+        { timeout: 30000 }
+      );
+
+      // Parse PR number from output
+      const prMatch = stdout.match(/PR #(\d+)/i) || stdout.match(/#(\d+)/);
+      const prNumber = prMatch ? parseInt(prMatch[1], 10) : 0;
+
+      return {
+        repoName: config.repoName,
+        url: `https://gitea.devops.methode5.at/${repoPath}/pulls/${prNumber}`,
+        number: prNumber,
+        provider: this.name
+      };
+    } catch (error) {
+      throw new PRCreationError(
+        `Failed to create Gitea PR: ${error instanceof Error ? error.message : String(error)}`,
+        this.name,
+        repoPath,
+        { branch, baseBranch }
+      );
+    }
+  }
+
+  async updatePRBody(config: RepoConfig, prNumber: number, body: string): Promise<void> {
+    const repoPath = `${config.remoteOwner}/${config.remoteRepo}`;
+    const jsonBody = JSON.stringify({ body });
+
+    try {
+      await execFileAsync(
+        this.cliPath,
+        ['raw:patch', `repos/${repoPath}/pulls/${prNumber}`, jsonBody],
+        { timeout: 30000 }
+      );
+    } catch (error) {
+      // Non-fatal - PR was created, just couldn't update body
+      console.warn(`Failed to update Gitea PR body for ${repoPath}#${prNumber}:`, error);
+    }
   }
 }
 
 /**
- * Updates a PR body via Gitea API.
+ * GitHub provider implementation using the github CLI.
  */
-async function updatePRBody(
-  config: RepoConfig,
-  prNumber: number,
-  body: string
-): Promise<void> {
-  const repoPath = `${config.giteaOwner}/${config.giteaRepo}`;
+class GitHubProvider implements GitProvider {
+  name = 'github';
+  private cliPath: string;
 
-  // Escape the body for JSON
-  const jsonBody = JSON.stringify({ body });
+  constructor(cliPath: string = 'github') {
+    this.cliPath = cliPath;
+  }
 
-  try {
-    await execAsync(
-      `/home/node/bin/gitea raw:patch repos/${repoPath}/pulls/${prNumber} '${jsonBody}'`,
-      { timeout: 30000 }
-    );
-  } catch (error) {
-    console.warn(`Failed to update PR body for ${repoPath}#${prNumber}:`, error);
-    // Don't throw - PR was created, just couldn't update body
+  async createPR(options: CreatePROptions): Promise<PRResult> {
+    const { config, branch, baseBranch, title, body } = options;
+
+    // Validate inputs
+    validateBranchName(branch);
+    validateBranchName(baseBranch);
+
+    const repoPath = `${config.remoteOwner}/${config.remoteRepo}`;
+
+    try {
+      // Use execFile with array arguments
+      const { stdout } = await execFileAsync(
+        this.cliPath,
+        [
+          'pr:create',
+          repoPath,
+          branch,
+          baseBranch,
+          title,
+          `--body=${body}`
+        ],
+        { timeout: 30000 }
+      );
+
+      // Parse PR number from output
+      const prMatch = stdout.match(/PR #(\d+)/i) || stdout.match(/#(\d+)/);
+      const prNumber = prMatch ? parseInt(prMatch[1], 10) : 0;
+
+      return {
+        repoName: config.repoName,
+        url: `https://github.com/${repoPath}/pull/${prNumber}`,
+        number: prNumber,
+        provider: this.name
+      };
+    } catch (error) {
+      throw new PRCreationError(
+        `Failed to create GitHub PR: ${error instanceof Error ? error.message : String(error)}`,
+        this.name,
+        repoPath,
+        { branch, baseBranch }
+      );
+    }
+  }
+
+  async updatePRBody(config: RepoConfig, prNumber: number, body: string): Promise<void> {
+    const repoPath = `${config.remoteOwner}/${config.remoteRepo}`;
+    const jsonBody = JSON.stringify({ body });
+
+    try {
+      await execFileAsync(
+        this.cliPath,
+        ['raw:patch', `repos/${repoPath}/pulls/${prNumber}`, jsonBody],
+        { timeout: 30000 }
+      );
+    } catch (error) {
+      console.warn(`Failed to update GitHub PR body for ${repoPath}#${prNumber}:`, error);
+    }
+  }
+}
+
+/**
+ * No-op provider when PR creation is disabled.
+ */
+class NoOpProvider implements GitProvider {
+  name = 'none';
+
+  async createPR(): Promise<PRResult> {
+    throw new PRCreationError('PR creation is disabled for this repository', 'none', '');
+  }
+}
+
+/**
+ * Factory function to get the appropriate provider.
+ */
+function getProvider(config: RepoConfig): GitProvider {
+  switch (config.gitProvider) {
+    case 'gitea':
+      return new GiteaProvider(config.giteaCliPath);
+    case 'github':
+      return new GitHubProvider(config.githubCliPath);
+    case 'none':
+    default:
+      return new NoOpProvider();
   }
 }
 
@@ -101,14 +244,21 @@ export async function createMultiRepoPRs(options: {
 
   // First pass: create all PRs with placeholder body
   for (const [, { branch, config }] of repoList) {
+    // Skip repos with no provider configured
+    if (config.gitProvider === 'none') {
+      console.log(`Skipping PR creation for ${config.repoName} (no provider configured)`);
+      continue;
+    }
+
     try {
-      const pr = await createSinglePR(
+      const provider = getProvider(config);
+      const pr = await provider.createPR({
         config,
         branch,
-        options.baseBranch,
-        options.title,
-        'Creating PR... (will update with links)'
-      );
+        baseBranch: options.baseBranch,
+        title: options.title,
+        body: 'Creating PR... (will update with links)'
+      });
       prs.push(pr);
     } catch (error) {
       console.error(`Failed to create PR for ${config.repoName}:`, error);
@@ -120,7 +270,7 @@ export async function createMultiRepoPRs(options: {
   let linkedDescription = options.body + '\n\n---\n\n## Related PRs\n\n';
   linkedDescription += `Task ID: \`${options.taskId}\`\n\n`;
   for (const pr of prs) {
-    linkedDescription += `- [${pr.repoName}: PR #${pr.number}](${pr.url})\n`;
+    linkedDescription += `- [${pr.repoName}: PR #${pr.number}](${pr.url}) (${pr.provider})\n`;
   }
   linkedDescription += '\n\n---\n*Generated by Claude Agent*';
 
@@ -128,7 +278,10 @@ export async function createMultiRepoPRs(options: {
   for (const pr of prs) {
     const repoData = options.repos.get(pr.repoName);
     if (repoData) {
-      await updatePRBody(repoData.config, pr.number, linkedDescription);
+      const provider = getProvider(repoData.config);
+      if (provider instanceof GiteaProvider || provider instanceof GitHubProvider) {
+        await provider.updatePRBody(repoData.config, pr.number, linkedDescription);
+      }
     }
   }
 
@@ -149,11 +302,14 @@ export async function createPR(options: {
   title: string;
   body: string;
 }): Promise<PRResult> {
-  return createSinglePR(
-    options.config,
-    options.branch,
-    options.baseBranch,
-    options.title,
-    options.body
-  );
+  if (options.config.gitProvider === 'none') {
+    throw new PRCreationError(
+      'PR creation is disabled for this repository',
+      'none',
+      options.config.repoName
+    );
+  }
+
+  const provider = getProvider(options.config);
+  return provider.createPR(options);
 }

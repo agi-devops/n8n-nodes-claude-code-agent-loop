@@ -1,29 +1,54 @@
 {
   "name": "n8n-nodes-claude-agent",
-  "version": "0.1.0",
-  "description": "n8n node for Claude Code Agent SDK integration with multi-repo support",
-  "keywords": ["n8n", "claude", "agent", "ai", "automation"],
+  "version": "1.0.0",
+  "description": "n8n node for Claude Code Agent SDK - run AI agents with git worktrees, multi-repo support, and session resume",
+  "author": {
+    "name": "Danny",
+    "email": "dennis@straehhuber.com"
+  },
   "license": "MIT",
-  "type": "module",
+  "homepage": "https://github.com/Niach/n8n-nodes-claude-agent#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Niach/n8n-nodes-claude-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Niach/n8n-nodes-claude-agent/issues"
+  },
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "claude",
+    "claude-code",
+    "anthropic",
+    "ai",
+    "agent",
+    "automation",
+    "git",
+    "worktree"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "engines": {
+    "node": ">=20.15"
+  },
   "n8n": {
     "n8nNodesApiVersion": 1,
     "nodes": ["dist/nodes/ClaudeAgent/ClaudeAgent.node.js"]
   },
   "scripts": {
-    "build": "tsc && npm run copy-icons",
-    "copy-icons": "cp nodes/ClaudeAgent/*.svg dist/nodes/ClaudeAgent/ 2>/dev/null || true",
+    "build": "tsc && npm run copy-assets",
+    "copy-assets": "cp nodes/ClaudeAgent/*.svg dist/nodes/ClaudeAgent/ 2>/dev/null || true && cp -r agents dist/ 2>/dev/null || true",
     "dev": "tsc -w",
     "lint": "eslint nodes lib --ext .ts",
     "prepublishOnly": "npm run build"
   },
-  "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "latest",
-    "simple-git": "^3.27.0"
-  },
   "peerDependencies": {
     "n8n-workflow": "*"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "simple-git": "^3.27.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -32,6 +57,7 @@
     "typescript": "^5.6.0"
   },
   "files": [
-    "dist"
+    "dist",
+    "agents"
   ]
 }

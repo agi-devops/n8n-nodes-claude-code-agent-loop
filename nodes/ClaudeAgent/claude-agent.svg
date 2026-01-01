@@ -1,12 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <rect width="64" height="64" rx="8" fill="#D97706"/>
-  <circle cx="32" cy="28" r="14" fill="#FFF"/>
-  <circle cx="27" cy="26" r="3" fill="#D97706"/>
-  <circle cx="37" cy="26" r="3" fill="#D97706"/>
-  <path d="M24 34 Q32 42 40 34" stroke="#D97706" stroke-width="2" fill="none" stroke-linecap="round"/>
-  <rect x="14" y="46" width="36" height="8" rx="2" fill="#FFF"/>
-  <rect x="18" y="48" width="4" height="4" rx="1" fill="#D97706"/>
-  <rect x="26" y="48" width="4" height="4" rx="1" fill="#D97706"/>
-  <rect x="34" y="48" width="4" height="4" rx="1" fill="#D97706"/>
-  <rect x="42" y="48" width="4" height="4" rx="1" fill="#D97706"/>
+  <!-- Background circle with Claude coral color -->
+  <circle cx="32" cy="32" r="30" fill="#DA7756"/>
+
+  <!-- Claude "C" shape - the iconic swoosh -->
+  <path d="M44 18c-9.389 0-17 7.611-17 17s7.611 17 17 17c4.694 0 8.944-1.902 12.021-4.979l-4.95-4.95A11.937 11.937 0 0144 44c-4.971 0-9-4.029-9-9s4.029-9 9-9c2.485 0 4.736.994 6.385 2.607l4.636-5.321C51.472 19.732 47.944 18 44 18z" fill="#FFF5F0"/>
+
+  <!-- Cool sunglasses -->
+  <g>
+    <!-- Left lens -->
+    <rect x="12" y="26" width="17" height="11" rx="3" fill="#1C1C1C"/>
+    <!-- Right lens -->
+    <rect x="35" y="26" width="17" height="11" rx="3" fill="#1C1C1C"/>
+    <!-- Bridge -->
+    <rect x="29" y="29" width="6" height="4" rx="1.5" fill="#1C1C1C"/>
+    <!-- Left arm -->
+    <path d="M12 30L4 28" stroke="#1C1C1C" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Right arm -->
+    <path d="M52 30L60 28" stroke="#1C1C1C" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Lens shine left -->
+    <path d="M15 28.5L20 27.5" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+    <!-- Lens shine right -->
+    <path d="M38 28.5L43 27.5" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+  </g>
 </svg>

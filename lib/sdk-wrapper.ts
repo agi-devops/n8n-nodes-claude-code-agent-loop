@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
-import { query, type SDKMessage, type Options, type SDKAssistantMessage, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
-
-const HOME_CLAUDE_MD = '/home/node/CLAUDE.md';  // Mounted from /home/m5/CLAUDE.md
+import * as path from 'path';
+import * as os from 'os';
+import { AgentExecutionError } from './errors.js';
 
 export interface AgentExecutionResult {
   success: boolean;
@@ -15,56 +15,62 @@ export interface SessionConfig {
   agentPrompt: string;       // From agent markdown file
   workingDir: string;
   worktrees: Map<string, string>;
-  syncWikiDocs: boolean;
   model: string;
   maxTurns: number;
   timeout: number;
   resumeSessionId?: string;  // Optional: resume previous session
   allowedTools?: string[];   // Override default tools
+  claudeMdPath?: string;     // Optional: custom CLAUDE.md path
 }
 
 /**
- * Loads the home directory CLAUDE.md file.
- * This ALWAYS gets included in the system prompt for context.
+ * Attempts to load CLAUDE.md from common locations.
+ * Order: custom path > working directory > home directory
  */
-async function loadHomeCLAUDEMD(): Promise<string> {
-  try {
-    const content = await fs.readFile(HOME_CLAUDE_MD, 'utf-8');
-    return `\n\n# Server Context (from ~/CLAUDE.md)\n\n${content}`;
-  } catch {
-    console.warn('Could not load home CLAUDE.md');
-    return '';
+async function loadCLAUDEMD(customPath?: string, workingDir?: string): Promise<string> {
+  const searchPaths: string[] = [];
+
+  // Custom path takes priority
+  if (customPath) {
+    searchPaths.push(customPath);
   }
+
+  // Check working directory
+  if (workingDir) {
+    searchPaths.push(path.join(workingDir, 'CLAUDE.md'));
+  }
+
+  // Check home directory (both container and host paths)
+  searchPaths.push(path.join(os.homedir(), 'CLAUDE.md'));
+  searchPaths.push('/home/node/CLAUDE.md');
+
+  for (const searchPath of searchPaths) {
+    try {
+      const content = await fs.readFile(searchPath, 'utf-8');
+      console.log(`Loaded CLAUDE.md from ${searchPath}`);
+      return `\n\n# Context (from ${searchPath})\n\n${content}`;
+    } catch {
+      // Try next path
+    }
+  }
+
+  console.warn('No CLAUDE.md found in any search path');
+  return '';
 }
 
 /**
  * Builds the workspace context message for multi-repo setups.
  */
-function buildWorkspaceContext(
-  worktrees: Map<string, string>,
-  syncWikiDocs: boolean
-): string {
+function buildWorkspaceContext(worktrees: Map<string, string>): string {
+  if (worktrees.size === 0) {
+    return '';
+  }
+
   const paths = Array.from(worktrees.entries())
     .map(([name, p]) => `- ${name}: ${p}`)
     .join('\n');
 
-  let context = `\n\n# Workspace\n\nYou are working in the following directories:\n${paths}\n`;
-
-  if (syncWikiDocs && worktrees.has('m5') && worktrees.has('wiki')) {
-    context += `
-## Wiki-Sync Requirement
-
-IMPORTANT: When you make code changes in the m5 repo, also update
-the corresponding wiki documentation. The wiki is symlinked at ./wiki/.
-
-Typical documentation updates:
-- New features -> /features/{name}.md
-- API changes -> /api/{endpoint}.md
-- Configuration -> /guides/configuration.md
-`;
-  }
-
-  return context;
+  return `\n\n# Workspace\n\nYou are working in the following directories:\n${paths}\n`;
 }
 
 /**
@@ -78,16 +84,6 @@ const DEFAULT_ALLOWED_TOOLS = [
   'NotebookEdit', 'NotebookRead'
 ];
 
-// Type guard for assistant messages
-function isAssistantMessage(msg: SDKMessage): msg is SDKAssistantMessage {
-  return msg.type === 'assistant';
-}
-
-// Type guard for result messages
-function isResultMessage(msg: SDKMessage): msg is SDKResultMessage {
-  return msg.type === 'result';
-}
-
 interface ContentBlock {
   type: string;
   text?: string;
@@ -95,10 +91,18 @@ interface ContentBlock {
   input?: { file_path?: string };
 }
 
+interface SDKMessage {
+  type: string;
+  session_id?: string;
+  message?: { content?: ContentBlock[] };
+  result?: string;
+}
+
 /**
  * Extracts text content from assistant messages.
  */
-function extractAssistantText(msg: SDKAssistantMessage): string {
+function extractAssistantText(msg: SDKMessage): string {
+  if (msg.type !== 'assistant') return '';
   const content = msg.message?.content;
   if (!Array.isArray(content)) return '';
 
@@ -111,7 +115,8 @@ function extractAssistantText(msg: SDKAssistantMessage): string {
 /**
  * Extracts file paths from tool_use blocks in assistant message.
  */
-function extractModifiedFiles(msg: SDKAssistantMessage): string[] {
+function extractModifiedFiles(msg: SDKMessage): string[] {
+  if (msg.type !== 'assistant') return [];
   const content = msg.message?.content;
   if (!Array.isArray(content)) return [];
 
@@ -132,28 +137,33 @@ function extractModifiedFiles(msg: SDKAssistantMessage): string[] {
 
 /**
  * Executes an agent task using the Claude Agent SDK.
+ * Uses dynamic import for ESM-only SDK.
  * Returns session ID for potential follow-up interactions.
  */
 export async function executeAgent(
   config: SessionConfig,
   taskPrompt: string
 ): Promise<AgentExecutionResult> {
-  // ALWAYS load home CLAUDE.md for server context
-  const homeCLAUDEMD = await loadHomeCLAUDEMD();
+  // Dynamic import for ESM-only SDK
+  const sdk = await import('@anthropic-ai/claude-agent-sdk');
+  const { query } = sdk;
+
+  // Load CLAUDE.md for context (searches multiple locations)
+  const claudeMdContent = await loadCLAUDEMD(config.claudeMdPath, config.workingDir);
 
   // Build workspace context for multi-repo awareness
-  const workspaceContext = buildWorkspaceContext(config.worktrees, config.syncWikiDocs);
+  const workspaceContext = buildWorkspaceContext(config.worktrees);
 
-  // Combine: Agent definition + Home CLAUDE.md + Workspace context
-  const fullSystemPrompt = config.agentPrompt + homeCLAUDEMD + workspaceContext;
+  // Combine: Agent definition + CLAUDE.md context + Workspace context
+  const fullSystemPrompt = config.agentPrompt + claudeMdContent + workspaceContext;
 
   // Build the full prompt including system instructions
   const fullPrompt = `${fullSystemPrompt}\n\n---\n\n# Task\n\n${taskPrompt}`;
 
-  const options: Options = {
+  const options = {
     cwd: config.workingDir,
     allowedTools: config.allowedTools || DEFAULT_ALLOWED_TOOLS,
-    tools: { type: 'preset', preset: 'claude_code' },
+    tools: { type: 'preset' as const, preset: 'claude_code' as const },
     // Resume from previous session if specified
     resume: config.resumeSessionId,
     // Additional directories for multi-repo access
@@ -176,6 +186,8 @@ export async function executeAgent(
     const startTime = Date.now();
 
     for await (const msg of q) {
+      const sdkMsg = msg as SDKMessage;
+
       // Check timeout
       if (Date.now() - startTime > timeoutMs) {
         console.warn('Agent execution timed out');
@@ -183,26 +195,26 @@ export async function executeAgent(
       }
 
       // Capture session ID from any message
-      if ('session_id' in msg && typeof msg.session_id === 'string') {
-        sessionId = msg.session_id;
+      if (sdkMsg.session_id) {
+        sessionId = sdkMsg.session_id;
       }
 
       // Process assistant messages
-      if (isAssistantMessage(msg)) {
-        const text = extractAssistantText(msg);
+      if (sdkMsg.type === 'assistant') {
+        const text = extractAssistantText(sdkMsg);
         if (text) {
           output.push(text);
         }
 
         // Track file modifications from tool_use blocks
-        const files = extractModifiedFiles(msg);
+        const files = extractModifiedFiles(sdkMsg);
         filesModified.push(...files);
       }
 
       // Check result message for final status
-      if (isResultMessage(msg)) {
-        if ('result' in msg && msg.result) {
-          output.push(msg.result);
+      if (sdkMsg.type === 'result') {
+        if (sdkMsg.result) {
+          output.push(sdkMsg.result);
         }
       }
     }
@@ -231,12 +243,16 @@ export async function executeAgent(
 export async function continueSession(
   sessionId: string,
   followUpPrompt: string,
-  config: Omit<SessionConfig, 'agentPrompt' | 'resumeSessionId'>
+  config: Omit<SessionConfig, 'agentPrompt' | 'resumeSessionId' | 'claudeMdPath'>
 ): Promise<AgentExecutionResult> {
-  const options: Options = {
+  // Dynamic import for ESM-only SDK
+  const sdk = await import('@anthropic-ai/claude-agent-sdk');
+  const { query } = sdk;
+
+  const options = {
     cwd: config.workingDir,
     allowedTools: config.allowedTools || DEFAULT_ALLOWED_TOOLS,
-    tools: { type: 'preset', preset: 'claude_code' },
+    tools: { type: 'preset' as const, preset: 'claude_code' as const },
     resume: sessionId,
     additionalDirectories: Array.from(config.worktrees.values()),
   };
@@ -254,24 +270,26 @@ export async function continueSession(
     const startTime = Date.now();
 
     for await (const msg of q) {
+      const sdkMsg = msg as SDKMessage;
+
       if (Date.now() - startTime > timeoutMs) {
         console.warn('Agent execution timed out');
         break;
       }
 
-      if (isAssistantMessage(msg)) {
-        const text = extractAssistantText(msg);
+      if (sdkMsg.type === 'assistant') {
+        const text = extractAssistantText(sdkMsg);
         if (text) {
           output.push(text);
         }
 
-        const files = extractModifiedFiles(msg);
+        const files = extractModifiedFiles(sdkMsg);
         filesModified.push(...files);
       }
 
-      if (isResultMessage(msg)) {
-        if ('result' in msg && msg.result) {
-          output.push(msg.result);
+      if (sdkMsg.type === 'result') {
+        if (sdkMsg.result) {
+          output.push(sdkMsg.result);
         }
       }
     }

@@ -7,9 +7,16 @@ import {
 } from 'n8n-workflow';
 
 import { loadAgent, loadAgentFromPath } from '../../lib/agent-loader.js';
-import { MultiRepoWorktreeManager } from '../../lib/worktree.js';
+import { MultiRepoWorktreeManager, type RepoConfig } from '../../lib/worktree.js';
 import { executeAgent } from '../../lib/sdk-wrapper.js';
 import { createMultiRepoPRs, type PRResult } from '../../lib/pr-creator.js';
+import {
+  validatePrompt,
+  validateBranchName,
+  validateTimeout,
+  validateMaxTurns,
+  validateRepoConfig,
+} from '../../lib/validation.js';
 
 export class ClaudeAgent implements INodeType {
   description: INodeTypeDescription = {
@@ -19,14 +26,14 @@ export class ClaudeAgent implements INodeType {
     group: ['transform'],
     version: 1,
     subtitle: '={{$parameter["agentName"]}}',
-    description: 'Run Claude Code Agent with native SDK - multi-repo support, session resume, wiki sync',
+    description: 'Run Claude Code Agent with native SDK - multi-repo support, session resume',
     defaults: {
       name: 'Claude Agent',
     },
     inputs: ['main'],
     outputs: ['main'],
     properties: [
-      // Agent Selection
+      // === Agent Selection ===
       {
         displayName: 'Agent Name',
         name: 'agentName',
@@ -53,27 +60,87 @@ export class ClaudeAgent implements INodeType {
         description: 'Absolute path to custom agent markdown file',
       },
 
-      // Repository Selection
+      // === Repository Configuration ===
       {
         displayName: 'Repositories',
         name: 'repositories',
-        type: 'multiOptions',
+        type: 'fixedCollection',
+        typeOptions: {
+          multipleValues: true,
+        },
+        default: {},
+        description: 'Configure repositories for the agent to work with',
         options: [
-          { name: 'M5 Project', value: 'm5' },
-          { name: 'Wiki', value: 'wiki' },
+          {
+            name: 'repos',
+            displayName: 'Repository',
+            values: [
+              {
+                displayName: 'Name',
+                name: 'repoName',
+                type: 'string',
+                default: '',
+                required: true,
+                description: 'Unique identifier for this repository',
+              },
+              {
+                displayName: 'Local Path',
+                name: 'localPath',
+                type: 'string',
+                default: '',
+                required: true,
+                description: 'Absolute path to the local git repository',
+              },
+              {
+                displayName: 'Worktrees Directory',
+                name: 'worktreesBase',
+                type: 'string',
+                default: '',
+                required: true,
+                description: 'Directory where worktrees will be created',
+              },
+              {
+                displayName: 'Git Provider',
+                name: 'gitProvider',
+                type: 'options',
+                options: [
+                  { name: 'Gitea', value: 'gitea' },
+                  { name: 'GitHub', value: 'github' },
+                  { name: 'None (No PRs)', value: 'none' },
+                ],
+                default: 'gitea',
+                description: 'Git provider for PR creation',
+              },
+              {
+                displayName: 'Remote Owner',
+                name: 'remoteOwner',
+                type: 'string',
+                default: '',
+                displayOptions: {
+                  hide: {
+                    gitProvider: ['none'],
+                  },
+                },
+                description: 'Owner/organization on the git provider',
+              },
+              {
+                displayName: 'Remote Repo',
+                name: 'remoteRepo',
+                type: 'string',
+                default: '',
+                displayOptions: {
+                  hide: {
+                    gitProvider: ['none'],
+                  },
+                },
+                description: 'Repository name on the git provider',
+              },
+            ],
+          },
         ],
-        default: ['m5'],
-        description: 'Select repos to work with. Multiple repos = synced worktrees.',
-      },
-      {
-        displayName: 'Sync Wiki Docs',
-        name: 'syncWikiDocs',
-        type: 'boolean',
-        default: true,
-        description: 'Automatically update wiki when code changes are made (requires both m5 and wiki selected)',
       },
 
-      // Task Configuration
+      // === Task Configuration ===
       {
         displayName: 'Prompt',
         name: 'prompt',
@@ -83,7 +150,7 @@ export class ClaudeAgent implements INodeType {
         },
         default: '',
         required: true,
-        description: 'Task prompt for the agent',
+        description: 'Task prompt for the agent (max 50KB)',
       },
       {
         displayName: 'Branch Name',
@@ -93,6 +160,13 @@ export class ClaudeAgent implements INodeType {
         description: 'Git branch name (auto-generated if empty)',
       },
       {
+        displayName: 'Base Branch',
+        name: 'baseBranch',
+        type: 'string',
+        default: 'main',
+        description: 'Base branch to create worktrees from',
+      },
+      {
         displayName: 'Create Pull Request',
         name: 'createPR',
         type: 'boolean',
@@ -100,35 +174,43 @@ export class ClaudeAgent implements INodeType {
         description: 'Create PR after changes are made',
       },
 
-      // Model Settings
+      // === Model Settings ===
       {
         displayName: 'Model',
         name: 'model',
         type: 'options',
         options: [
-          { name: 'Claude Sonnet 4', value: 'claude-sonnet-4-5-20250929' },
-          { name: 'Claude Opus 4', value: 'claude-opus-4-5-20250929' },
+          { name: 'Claude Sonnet 4', value: 'claude-sonnet-4-20250514' },
+          { name: 'Claude Opus 4', value: 'claude-opus-4-20250514' },
           { name: 'Claude Haiku 3.5', value: 'claude-3-5-haiku-20241022' },
         ],
-        default: 'claude-sonnet-4-5-20250929',
+        default: 'claude-sonnet-4-20250514',
         description: 'Model to use (can be overridden by agent definition)',
       },
       {
         displayName: 'Max Turns',
         name: 'maxTurns',
         type: 'number',
+        typeOptions: {
+          minValue: 1,
+          maxValue: 200,
+        },
         default: 50,
-        description: 'Maximum agent conversation turns',
+        description: 'Maximum agent conversation turns (1-200)',
       },
       {
         displayName: 'Timeout (seconds)',
         name: 'timeout',
         type: 'number',
+        typeOptions: {
+          minValue: 10,
+          maxValue: 3600,
+        },
         default: 600,
-        description: 'Maximum execution time in seconds',
+        description: 'Maximum execution time in seconds (10-3600)',
       },
 
-      // Session Resume
+      // === Session Resume ===
       {
         displayName: 'Resume Session',
         name: 'resumeSession',
@@ -160,23 +242,77 @@ export class ClaudeAgent implements INodeType {
         // Get parameters
         const agentName = this.getNodeParameter('agentName', i) as string;
         const customAgentPath = this.getNodeParameter('customAgentPath', i, '') as string;
-        const repositories = this.getNodeParameter('repositories', i) as string[];
-        const syncWikiDocs = this.getNodeParameter('syncWikiDocs', i, true) as boolean;
+        const repositoriesParam = this.getNodeParameter('repositories', i, {}) as {
+          repos?: Array<{
+            repoName: string;
+            localPath: string;
+            worktreesBase: string;
+            gitProvider: 'gitea' | 'github' | 'none';
+            remoteOwner?: string;
+            remoteRepo?: string;
+          }>;
+        };
         const prompt = this.getNodeParameter('prompt', i) as string;
         const branchName = this.getNodeParameter('branchName', i, '') as string;
+        const baseBranch = this.getNodeParameter('baseBranch', i, 'main') as string;
         const createPR = this.getNodeParameter('createPR', i, true) as boolean;
-        const model = this.getNodeParameter('model', i, 'claude-sonnet-4-5-20250929') as string;
+        const model = this.getNodeParameter('model', i, 'claude-sonnet-4-20250514') as string;
         const maxTurns = this.getNodeParameter('maxTurns', i, 50) as number;
         const timeout = this.getNodeParameter('timeout', i, 600) as number;
         const resumeSession = this.getNodeParameter('resumeSession', i, false) as boolean;
         const sessionId = this.getNodeParameter('sessionId', i, '') as string;
 
-        if (!prompt) {
-          throw new NodeOperationError(this.getNode(), 'Prompt is required', { itemIndex: i });
+        // Validate inputs
+        try {
+          validatePrompt(prompt);
+          validateBranchName(branchName);
+          validateBranchName(baseBranch);
+          validateTimeout(timeout);
+          validateMaxTurns(maxTurns);
+        } catch (validationError) {
+          throw new NodeOperationError(
+            this.getNode(),
+            validationError instanceof Error ? validationError.message : String(validationError),
+            { itemIndex: i }
+          );
         }
 
-        if (repositories.length === 0) {
-          throw new NodeOperationError(this.getNode(), 'At least one repository must be selected', { itemIndex: i });
+        // Build repo configs
+        const repos = repositoriesParam.repos || [];
+        if (repos.length === 0) {
+          throw new NodeOperationError(
+            this.getNode(),
+            'At least one repository must be configured',
+            { itemIndex: i }
+          );
+        }
+
+        const repoConfigs: RepoConfig[] = [];
+        for (const repo of repos) {
+          try {
+            validateRepoConfig({
+              localPath: repo.localPath,
+              worktreesBase: repo.worktreesBase,
+              gitProvider: repo.gitProvider,
+              remoteOwner: repo.remoteOwner,
+              remoteRepo: repo.remoteRepo,
+            });
+          } catch (validationError) {
+            throw new NodeOperationError(
+              this.getNode(),
+              `Repository "${repo.repoName}": ${validationError instanceof Error ? validationError.message : String(validationError)}`,
+              { itemIndex: i }
+            );
+          }
+
+          repoConfigs.push({
+            repoPath: repo.localPath,
+            worktreesBase: repo.worktreesBase,
+            repoName: repo.repoName,
+            gitProvider: repo.gitProvider,
+            remoteOwner: repo.remoteOwner || '',
+            remoteRepo: repo.remoteRepo || '',
+          });
         }
 
         // 1. Load agent definition
@@ -188,24 +324,24 @@ export class ClaudeAgent implements INodeType {
 
         // 2. Create multi-repo worktrees
         const worktreeManager = new MultiRepoWorktreeManager(
-          repositories,
+          repoConfigs,
           branchName || undefined
         );
-        const workspace = await worktreeManager.create();
+        const workspace = await worktreeManager.create(baseBranch);
 
         console.log(`Created workspace: ${workspace.taskId}`);
         console.log(`Working directory: ${workspace.workingDir}`);
+        console.log(`Branch: ${workspace.branchName}`);
 
         let executionResult;
         let prs: PRResult[] = [];
 
         try {
-          // 3. Execute agent with V2 SDK
+          // 3. Execute agent with SDK
           executionResult = await executeAgent({
             agentPrompt: agent.systemPrompt,
             workingDir: workspace.workingDir,
             worktrees: workspace.worktrees,
-            syncWikiDocs: syncWikiDocs && repositories.includes('m5') && repositories.includes('wiki'),
             model: agent.model || model,
             maxTurns,
             timeout,
@@ -228,7 +364,7 @@ export class ClaudeAgent implements INodeType {
               const prResult = await createMultiRepoPRs({
                 taskId: workspace.taskId,
                 repos: pushResults,
-                baseBranch: 'main',
+                baseBranch,
                 title: `[Agent/${agent.name}] ${prompt.slice(0, 60)}`,
                 body: executionResult.output.slice(0, 2000),
               });
@@ -251,11 +387,13 @@ export class ClaudeAgent implements INodeType {
             filesModified: executionResult.filesModified,
             sessionId: executionResult.sessionId,
             taskId: workspace.taskId,
+            branchName: workspace.branchName,
             agentName: agent.name,
             prs: prs.map(pr => ({
               repo: pr.repoName,
               number: pr.number,
               url: pr.url,
+              provider: pr.provider,
             })),
             error: executionResult.error,
           },
