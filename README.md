@@ -1,5 +1,8 @@
 # n8n-nodes-claude-agent-loop
 
+[![npm version](https://img.shields.io/npm/v/n8n-nodes-claude-agent-loop.svg)](https://www.npmjs.com/package/n8n-nodes-claude-agent-loop)
+[![npm downloads](https://img.shields.io/npm/dm/n8n-nodes-claude-agent-loop.svg)](https://www.npmjs.com/package/n8n-nodes-claude-agent-loop)
+
 n8n community node for running Claude Code agents with native SDK integration.
 
 **Features:**
