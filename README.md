@@ -28,6 +28,7 @@ npm run build
 
 - **Claude Code CLI** authenticated (`claude` command available)
 - **Agents** defined in `~/.claude/agents/` (see below)
+- **Skills** (optional) in `~/.claude/skills/` for CLI tool access
 - **Git** for worktree operations
 - Optional: `gitea` or `github` CLI for PR creation
 
@@ -63,6 +64,54 @@ You are a code review agent. Your task is to review code changes and suggest imp
 |-------|-------------|
 | `tools` | Array of allowed tools: `[Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch]` |
 | `model` | Claude model ID (e.g., `claude-sonnet-4-20250514`, `claude-opus-4-20250514`) |
+
+## Skills (CLI Tools)
+
+Skills provide CLI tools that agents can use. They are automatically loaded from `~/.claude/skills/` and injected into the agent's context.
+
+### Skill Structure
+
+```
+~/.claude/skills/
+  gitea/
+    SKILL.md          # Skill definition
+    scripts/
+      gitea           # Executable CLI script
+  youtrack/
+    SKILL.md
+    scripts/
+      youtrack
+```
+
+### Example Skill: `~/.claude/skills/gitea/SKILL.md`
+
+```markdown
+---
+name: gitea
+description: Interacts with Gitea git server. Manages repositories, branches, issues, pull requests, releases, and webhooks. Use when working with Gitea repos.
+allowed-tools: Bash
+---
+# Gitea CLI
+
+Execute: `~/.claude/skills/gitea/scripts/gitea <command> [args]`
+
+## Commands
+- `repos` - List repositories
+- `repo:create <name>` - Create repository
+- `issues <owner/repo>` - List issues
+- `pr:create <owner/repo> --title "..." --body "..."` - Create PR
+```
+
+### Skill Frontmatter
+
+| Field | Description |
+|-------|-------------|
+| `name` | Skill identifier |
+| `description` | When to use this skill (used for context injection) |
+| `allowed-tools` | Tools the skill needs (e.g., `Bash`) |
+| `model` | Optional model override |
+
+All skills are automatically available to every agent execution.
 
 ## Node Configuration
 
@@ -134,12 +183,17 @@ Add one or more repositories for the agent to work with:
 
 ## n8n Container Setup
 
-When running n8n in Docker, mount your Claude configuration:
+When running n8n in Docker, mount your Claude configuration and skills:
 
 ```yaml
 volumes:
-  - ~/.claude:/home/node/.claude
+  - ~/.claude:/home/node/.claude     # Agents, skills, and auth
+  - ~/CLAUDE.md:/home/node/CLAUDE.md:ro  # Optional context file
 ```
+
+The node will automatically find:
+- Agents at `/home/node/.claude/agents/`
+- Skills at `/home/node/.claude/skills/`
 
 ## Security
 

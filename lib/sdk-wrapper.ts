@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { AgentExecutionError } from './errors.js';
+import { loadAllSkills, buildSkillContext } from './skill-loader.js';
 
 export interface AgentExecutionResult {
   success: boolean;
@@ -154,8 +155,20 @@ export async function executeAgent(
   // Build workspace context for multi-repo awareness
   const workspaceContext = buildWorkspaceContext(config.worktrees);
 
-  // Combine: Agent definition + CLAUDE.md context + Workspace context
-  const fullSystemPrompt = config.agentPrompt + claudeMdContent + workspaceContext;
+  // Load and inject all available skills
+  let skillContext = '';
+  try {
+    const allSkills = await loadAllSkills();
+    if (allSkills.length > 0) {
+      skillContext = buildSkillContext(allSkills);
+      console.log(`Loaded ${allSkills.length} skills: ${allSkills.map(s => s.name).join(', ')}`);
+    }
+  } catch (error) {
+    console.warn('Failed to load skills:', error);
+  }
+
+  // Combine: Agent definition + CLAUDE.md context + Workspace context + Skills context
+  const fullSystemPrompt = config.agentPrompt + claudeMdContent + workspaceContext + skillContext;
 
   // Build the full prompt including system instructions
   const fullPrompt = `${fullSystemPrompt}\n\n---\n\n# Task\n\n${taskPrompt}`;

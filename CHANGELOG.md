@@ -5,6 +5,17 @@ All notable changes to n8n-claude-agent-pr will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-01-01
+
+### Added
+- **Claude Code Skills integration** - Automatically loads and injects all skills from `~/.claude/skills/`
+- New `skill-loader.ts` module for discovering and parsing SKILL.md files
+- Skills are injected into agent system prompt with full command references
+
+### Changed
+- Agent system prompts now include skills context with all available CLI tools
+- Skills use YAML frontmatter format: `name`, `description`, `allowed-tools`
+
 ## [1.1.0] - 2025-01-01
 
 ### Changed
