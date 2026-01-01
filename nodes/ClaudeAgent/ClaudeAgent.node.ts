@@ -6,6 +6,10 @@ import {
   NodeOperationError,
 } from 'n8n-workflow';
 
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+
 import { loadAgent } from '../../lib/agent-loader.js';
 import { MultiRepoWorktreeManager, type RepoConfig } from '../../lib/worktree.js';
 import { executeAgent } from '../../lib/sdk-wrapper.js';
@@ -53,7 +57,7 @@ export class ClaudeAgent implements INodeType {
           multipleValues: true,
         },
         default: {},
-        description: 'Configure repositories for the agent to work with',
+        description: 'Configure repositories for the agent to work with. Leave empty for prompt-only mode (no git operations).',
         options: [
           {
             name: 'repos',
@@ -262,102 +266,135 @@ export class ClaudeAgent implements INodeType {
 
         // Build repo configs
         const repos = repositoriesParam.repos || [];
-        if (repos.length === 0) {
-          throw new NodeOperationError(
-            this.getNode(),
-            'At least one repository must be configured',
-            { itemIndex: i }
-          );
-        }
-
-        const repoConfigs: RepoConfig[] = [];
-        for (const repo of repos) {
-          try {
-            validateRepoConfig({
-              localPath: repo.localPath,
-              worktreesBase: repo.worktreesBase,
-              gitProvider: repo.gitProvider,
-              remoteOwner: repo.remoteOwner,
-              remoteRepo: repo.remoteRepo,
-            });
-          } catch (validationError) {
-            throw new NodeOperationError(
-              this.getNode(),
-              `Repository "${repo.repoName}": ${validationError instanceof Error ? validationError.message : String(validationError)}`,
-              { itemIndex: i }
-            );
-          }
-
-          repoConfigs.push({
-            repoPath: repo.localPath,
-            worktreesBase: repo.worktreesBase,
-            repoName: repo.repoName,
-            gitProvider: repo.gitProvider,
-            remoteOwner: repo.remoteOwner || '',
-            remoteRepo: repo.remoteRepo || '',
-          });
-        }
+        const isPromptOnlyMode = repos.length === 0;
 
         // 1. Load agent definition from ~/.claude/agents/<name>.md
         const agent = await loadAgent(agentName);
-
         console.log(`Loaded agent: ${agent.name}`);
-
-        // 2. Create multi-repo worktrees
-        const worktreeManager = new MultiRepoWorktreeManager(
-          repoConfigs,
-          branchName || undefined
-        );
-        const workspace = await worktreeManager.create(baseBranch);
-
-        console.log(`Created workspace: ${workspace.taskId}`);
-        console.log(`Working directory: ${workspace.workingDir}`);
-        console.log(`Branch: ${workspace.branchName}`);
 
         let executionResult;
         let prs: PRResult[] = [];
+        let taskId = '';
+        let finalBranchName = '';
 
-        try {
-          // 3. Execute agent with SDK
-          executionResult = await executeAgent({
-            agentPrompt: agent.systemPrompt,
-            workingDir: workspace.workingDir,
-            worktrees: workspace.worktrees,
-            model: agent.model || model,
-            maxTurns,
-            timeout,
-            resumeSessionId: resumeSession ? sessionId : undefined,
-            allowedTools: agent.tools,
-          }, prompt);
+        if (isPromptOnlyMode) {
+          // === PROMPT-ONLY MODE ===
+          // No git operations, just run the agent in a temp directory
+          const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-agent-'));
+          taskId = path.basename(tempDir);
 
-          console.log(`Agent execution completed: success=${executionResult.success}`);
-          console.log(`Files modified: ${executionResult.filesModified.length}`);
-          console.log(`Session ID: ${executionResult.sessionId}`);
+          console.log(`Prompt-only mode: working in ${tempDir}`);
 
-          // 4. Commit and push if changes were made and PR requested
-          if (createPR && executionResult.filesModified.length > 0) {
-            const commitMessage = `Agent: ${agent.name}\n\n${prompt.slice(0, 200)}`;
-            await worktreeManager.commitAll(commitMessage);
+          try {
+            executionResult = await executeAgent({
+              agentPrompt: agent.systemPrompt,
+              workingDir: tempDir,
+              worktrees: new Map(),
+              model: agent.model || model,
+              maxTurns,
+              timeout,
+              resumeSessionId: resumeSession ? sessionId : undefined,
+              allowedTools: agent.tools,
+            }, prompt);
 
-            const pushResults = await worktreeManager.pushAll();
-
-            if (pushResults.size > 0) {
-              const prResult = await createMultiRepoPRs({
-                taskId: workspace.taskId,
-                repos: pushResults,
-                baseBranch,
-                title: `[Agent/${agent.name}] ${prompt.slice(0, 60)}`,
-                body: executionResult.output.slice(0, 2000),
-              });
-              prs = prResult.prs;
-
-              console.log(`Created ${prs.length} PRs`);
+            console.log(`Agent execution completed: success=${executionResult.success}`);
+            console.log(`Session ID: ${executionResult.sessionId}`);
+          } finally {
+            // Cleanup temp directory
+            try {
+              await fs.rm(tempDir, { recursive: true, force: true });
+              console.log(`Cleaned up temp directory: ${tempDir}`);
+            } catch (cleanupError) {
+              console.warn(`Failed to cleanup temp directory: ${cleanupError}`);
             }
           }
-        } finally {
-          // 5. Always cleanup worktrees
-          await worktreeManager.cleanupAll();
-          console.log(`Cleaned up workspace: ${workspace.taskId}`);
+        } else {
+          // === REPOSITORY MODE ===
+          // Full git worktree support with optional PR creation
+          const repoConfigs: RepoConfig[] = [];
+          for (const repo of repos) {
+            try {
+              validateRepoConfig({
+                localPath: repo.localPath,
+                worktreesBase: repo.worktreesBase,
+                gitProvider: repo.gitProvider,
+                remoteOwner: repo.remoteOwner,
+                remoteRepo: repo.remoteRepo,
+              });
+            } catch (validationError) {
+              throw new NodeOperationError(
+                this.getNode(),
+                `Repository "${repo.repoName}": ${validationError instanceof Error ? validationError.message : String(validationError)}`,
+                { itemIndex: i }
+              );
+            }
+
+            repoConfigs.push({
+              repoPath: repo.localPath,
+              worktreesBase: repo.worktreesBase,
+              repoName: repo.repoName,
+              gitProvider: repo.gitProvider,
+              remoteOwner: repo.remoteOwner || '',
+              remoteRepo: repo.remoteRepo || '',
+            });
+          }
+
+          // Create multi-repo worktrees
+          const worktreeManager = new MultiRepoWorktreeManager(
+            repoConfigs,
+            branchName || undefined
+          );
+          const workspace = await worktreeManager.create(baseBranch);
+
+          taskId = workspace.taskId;
+          finalBranchName = workspace.branchName;
+
+          console.log(`Created workspace: ${workspace.taskId}`);
+          console.log(`Working directory: ${workspace.workingDir}`);
+          console.log(`Branch: ${workspace.branchName}`);
+
+          try {
+            // Execute agent with SDK
+            executionResult = await executeAgent({
+              agentPrompt: agent.systemPrompt,
+              workingDir: workspace.workingDir,
+              worktrees: workspace.worktrees,
+              model: agent.model || model,
+              maxTurns,
+              timeout,
+              resumeSessionId: resumeSession ? sessionId : undefined,
+              allowedTools: agent.tools,
+            }, prompt);
+
+            console.log(`Agent execution completed: success=${executionResult.success}`);
+            console.log(`Files modified: ${executionResult.filesModified.length}`);
+            console.log(`Session ID: ${executionResult.sessionId}`);
+
+            // Commit and push if changes were made and PR requested
+            if (createPR && executionResult.filesModified.length > 0) {
+              const commitMessage = `Agent: ${agent.name}\n\n${prompt.slice(0, 200)}`;
+              await worktreeManager.commitAll(commitMessage);
+
+              const pushResults = await worktreeManager.pushAll();
+
+              if (pushResults.size > 0) {
+                const prResult = await createMultiRepoPRs({
+                  taskId: workspace.taskId,
+                  repos: pushResults,
+                  baseBranch,
+                  title: `[Agent/${agent.name}] ${prompt.slice(0, 60)}`,
+                  body: executionResult.output.slice(0, 2000),
+                });
+                prs = prResult.prs;
+
+                console.log(`Created ${prs.length} PRs`);
+              }
+            }
+          } finally {
+            // Always cleanup worktrees
+            await worktreeManager.cleanupAll();
+            console.log(`Cleaned up workspace: ${workspace.taskId}`);
+          }
         }
 
         // Return result
@@ -367,8 +404,8 @@ export class ClaudeAgent implements INodeType {
             output: executionResult.output,
             filesModified: executionResult.filesModified,
             sessionId: executionResult.sessionId,
-            taskId: workspace.taskId,
-            branchName: workspace.branchName,
+            taskId,
+            branchName: finalBranchName,
             agentName: agent.name,
             prs: prs.map(pr => ({
               repo: pr.repoName,
