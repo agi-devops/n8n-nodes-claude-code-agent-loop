@@ -1,4 +1,4 @@
-# n8n-nodes-claude-agent
+# n8n-claude-agent-pr
 
 n8n community node for running Claude Code agents with native SDK integration.
 
@@ -11,16 +11,19 @@ n8n community node for running Claude Code agents with native SDK integration.
 
 ## Installation
 
-Install via n8n Community Nodes:
+Clone the repository and build locally:
 
-1. Go to **Settings > Community Nodes**
-2. Select **Install**
-3. Enter `n8n-nodes-claude-agent`
-4. Click **Install**
-
-Or install manually:
 ```bash
-npm install n8n-nodes-claude-agent
+git clone https://github.com/Niach/n8n-claude-agent-pr.git
+cd n8n-claude-agent-pr
+npm install
+npm run build
+```
+
+Then link to your n8n custom nodes directory:
+```bash
+# Copy to n8n custom nodes location (inside n8n container)
+cp -r dist /path/to/n8n/custom/nodes/n8n-claude-agent-pr
 ```
 
 ## Prerequisites

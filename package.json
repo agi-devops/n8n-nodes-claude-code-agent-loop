@@ -1,5 +1,5 @@
 {
-  "name": "n8n-nodes-claude-agent",
+  "name": "n8n-claude-agent-pr",
   "version": "1.0.0",
   "description": "n8n node for Claude Code Agent SDK - run AI agents with git worktrees, multi-repo support, and session resume",
   "author": {
@@ -7,13 +7,13 @@
     "email": "dennis@straehhuber.com"
   },
   "license": "MIT",
-  "homepage": "https://github.com/Niach/n8n-nodes-claude-agent#readme",
+  "homepage": "https://github.com/Niach/n8n-claude-agent-pr#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Niach/n8n-nodes-claude-agent.git"
+    "url": "git+https://github.com/Niach/n8n-claude-agent-pr.git"
   },
   "bugs": {
-    "url": "https://github.com/Niach/n8n-nodes-claude-agent/issues"
+    "url": "https://github.com/Niach/n8n-claude-agent-pr/issues"
   },
   "keywords": [
     "n8n-community-node-package",
